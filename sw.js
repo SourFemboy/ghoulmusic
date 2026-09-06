@@ -1,4 +1,4 @@
-const CACHE="ghoulmusic-shell-v4-backup";
+const CACHE="ghoulmusic-shell-v5-durable-audio";
 const ASSETS=[
   "./","./index.html","./styles.css","./db.js","./metadata.js","./app.js",
   "./manifest.webmanifest","./background.jpg","./icons/icon-180.png","./icons/icon-192.png","./icons/icon-512.png"

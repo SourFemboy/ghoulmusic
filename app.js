@@ -26,6 +26,8 @@
     tracks = await GMDB.all("tracks");
     playlists = await GMDB.all("playlists");
     await migrateStableFingerprints();
+    await migrateLegacyAudioStorage();
+    await reconcilePendingRestores();
     tracks.sort((a,b)=>b.addedAt-a.addedAt);
     bind();
     renderAll();
@@ -60,6 +62,139 @@
       }
     }
     return changed;
+  }
+
+
+  async function makeDurableAudioBlob(file){
+    // Force the selected File's bytes into memory, then create a plain Blob.
+    // This avoids keeping a disk-backed File object in IndexedDB on iOS.
+    const bytes = await file.arrayBuffer();
+    return new Blob([bytes], {type:file.type || "application/octet-stream"});
+  }
+
+  async function migrateLegacyAudioStorage(){
+    let upgraded=0, broken=0;
+    for(const t of tracks){
+      if(t.audioBlob instanceof Blob && t.audioBlob.size>0) continue;
+      if(t.file instanceof Blob){
+        try{
+          const bytes=await t.file.arrayBuffer();
+          if(!bytes.byteLength) throw new Error("empty audio");
+          t.audioBlob=new Blob([bytes],{type:t.file.type || t.mimeType || "application/octet-stream"});
+          t.fileName=t.file.name || t.fileName || `${t.title || "track"}`;
+          t.mimeType=t.file.type || t.mimeType || "";
+          t.needsRepair=false;
+          delete t.file;
+          await GMDB.put("tracks",t);
+          upgraded++;
+        }catch(err){
+          console.warn("Legacy audio needs repair",t.title,err);
+          t.needsRepair=true;
+          broken++;
+        }
+      }else{
+        t.needsRepair=true;
+        broken++;
+      }
+    }
+    return {upgraded,broken};
+  }
+
+  function savedTrackRef(t){
+    if(!t) return null;
+    return {
+      id:t.id || "",
+      fingerprint:t.fingerprint || stableFingerprintFromLegacyId(t.id),
+      title:t.title || "",
+      artist:t.artist || "",
+      album:t.album || "",
+      genre:t.genre || "",
+      year:t.year || "",
+      liked:!!t.liked,
+      playCount:t.playCount || 0,
+      lastPlayed:t.lastPlayed || 0
+    };
+  }
+
+  function buildTrackMaps(){
+    const byFingerprint=new Map();
+    const byKey=new Map();
+    for(const t of tracks){
+      const fp=t.fingerprint || stableFingerprintFromLegacyId(t.id);
+      if(fp) byFingerprint.set(fp,t);
+      byKey.set(normalizedTrackKey(t),t);
+    }
+    return {byFingerprint,byKey};
+  }
+
+  function findCurrentForSaved(saved,maps){
+    if(!saved) return null;
+    const fp=saved.fingerprint || stableFingerprintFromLegacyId(saved.id);
+    return (fp && maps.byFingerprint.get(fp)) || maps.byKey.get(normalizedTrackKey(saved)) || null;
+  }
+
+  async function applySavedState(current,saved){
+    if(!current || !saved) return;
+    current.liked=!!saved.liked;
+    current.playCount=Math.max(current.playCount||0,saved.playCount||0);
+    current.lastPlayed=Math.max(current.lastPlayed||0,saved.lastPlayed||0);
+    if((!current.title || current.title==="Unknown") && saved.title) current.title=saved.title;
+    if((!current.artist || current.artist==="Unknown Artist") && saved.artist) current.artist=saved.artist;
+    if((!current.album || current.album==="Unknown Album") && saved.album) current.album=saved.album;
+    await GMDB.put("tracks",current);
+  }
+
+  async function getPendingRestore(){
+    const rec=await GMDB.get("settings","pendingRestore");
+    return rec?.value || {tracks:[]};
+  }
+
+  async function setPendingRestore(state){
+    const clean={tracks:[...(state?.tracks||[])]};
+    if(clean.tracks.length){
+      await GMDB.put("settings",{key:"pendingRestore",value:clean});
+    }else{
+      await GMDB.del("settings","pendingRestore");
+    }
+  }
+
+  async function reconcilePendingRestores(){
+    const maps=buildTrackMaps();
+    const pending=await getPendingRestore();
+    const stillPending=[];
+    let resolved=0;
+
+    for(const saved of pending.tracks||[]){
+      const current=findCurrentForSaved(saved,maps);
+      if(current){
+        await applySavedState(current,saved);
+        resolved++;
+      }else{
+        stillPending.push(saved);
+      }
+    }
+    await setPendingRestore({tracks:stillPending});
+
+    for(const p of playlists){
+      if(!Array.isArray(p.pendingTrackRefs) || !p.pendingTrackRefs.length) continue;
+      const left=[];
+      for(const ref of p.pendingTrackRefs){
+        const current=findCurrentForSaved(ref,maps);
+        if(current){
+          if(!p.trackIds.includes(current.id)) p.trackIds.push(current.id);
+          resolved++;
+        }else{
+          left.push(ref);
+        }
+      }
+      p.pendingTrackRefs=left;
+      await GMDB.put("playlists",p);
+    }
+    return {resolved,remaining:stillPending.length};
+  }
+
+  function playlistTotal(p){
+    return (p.trackIds?.length||0)+(p.pendingTrackRefs?.length||0);
   }
 
   function bind() {
@@ -100,6 +235,10 @@
     audio.addEventListener("loadedmetadata", updateProgress);
     audio.addEventListener("play", updatePlayButtons);
     audio.addEventListener("pause", updatePlayButtons);
+    audio.addEventListener("error",()=>{
+      const t=trackById(currentId);
+      if(t) toast(`"${t.title}" could not play. Re-import it from iCloud.`,4500);
+    });
     audio.addEventListener("ended",()=> repeat==="one" ? (audio.currentTime=0,audio.play()) : nextTrack());
 
     $("#queueBtn").addEventListener("click",()=>{renderQueue(); openModal("queueSheet")});
@@ -123,6 +262,10 @@
     $$("[data-close-modal]").forEach(b=>b.addEventListener("click",()=>closeModal(b.dataset.closeModal)));
 
     $("#requestPersistent").addEventListener("click",()=>requestPersistence(true));
+    $("#repairMusic").addEventListener("click",()=>{
+      importPlaylistId=null;
+      filePicker.click();
+    });
     $("#exportLibrary").addEventListener("click", exportData);
     $("#restoreLibrary").addEventListener("click",()=>backupPicker.click());
     backupPicker.addEventListener("change", restoreData);
@@ -138,26 +281,42 @@
     const destination = destinationPlaylistId ? playlists.find(p=>p.id===destinationPlaylistId) : null;
     toast(destination ? `Adding ${files.length} song${files.length===1?"":"s"} to ${destination.name}…` : `Importing ${files.length} song${files.length===1?"":"s"}…`, 5000);
 
-    let added=0, existing=0, failed=0, addedToPlaylist=0;
+    let added=0, refreshed=0, failed=0, addedToPlaylist=0;
 
     for (const file of files) {
       try {
         if (!file.type.startsWith("audio/") && !/\.(mp3|m4a|aac|flac|wav|ogg|opus)$/i.test(file.name)) { failed++; continue; }
 
         const meta = await GMMetadata.parse(file);
+        const audioBlob = await makeDurableAudioBlob(file);
+        if(!audioBlob.size) throw new Error("Audio file was empty");
+
         let track = await GMDB.get("tracks", meta.id);
 
         if (track) {
-          existing++;
+          // Re-importing a known song repairs/replaces its local audio bytes
+          // while keeping likes, play history, etc.
+          track.audioBlob=audioBlob;
+          track.fileName=file.name;
+          track.mimeType=file.type || "";
+          track.needsRepair=false;
+          track.artwork=meta.artwork || track.artwork || null;
+          track.fingerprint=meta.fingerprint || track.fingerprint;
+          delete track.file;
+          await GMDB.put("tracks",track);
+          refreshed++;
         } else {
           track = {
             ...meta,
-            file,
+            audioBlob,
+            fileName:file.name,
+            mimeType:file.type || "",
             artwork: meta.artwork || null,
             liked:false,
             addedAt:Date.now()+added,
             lastPlayed:0,
-            playCount:0
+            playCount:0,
+            needsRepair:false
           };
           await GMDB.put("tracks", track);
           tracks.unshift(track);
@@ -174,9 +333,10 @@
       }
     }
 
-    if (destination) {
-      await GMDB.put("playlists", destination);
-    }
+    if (destination) await GMDB.put("playlists", destination);
+
+    // If a backup was restored before the audio, reconnect those songs now.
+    const recovered=await reconcilePendingRestores();
 
     filePicker.value="";
     renderAll();
@@ -184,17 +344,21 @@
     if (destination) {
       openPlaylist(destination.id);
       const parts=[`${addedToPlaylist} added to playlist`];
-      if (added) parts.push(`${added} new to library`);
-      if (existing) parts.push(`${existing} already in library`);
+      if (added) parts.push(`${added} new`);
+      if (refreshed) parts.push(`${refreshed} repaired/refreshed`);
+      if (recovered.resolved) parts.push(`${recovered.resolved} backup links restored`);
       if (failed) parts.push(`${failed} couldn't import`);
-      toast(parts.join(" • "), 4500);
+      toast(parts.join(" • "), 5000);
     } else {
-      const parts=[`${added} added`];
-      if(existing) parts.push(`${existing} duplicates skipped`);
+      const parts=[];
+      if(added) parts.push(`${added} added`);
+      if(refreshed) parts.push(`${refreshed} repaired/refreshed`);
+      if(recovered.resolved) parts.push(`${recovered.resolved} backup links restored`);
       if(failed) parts.push(`${failed} couldn't import`);
-      toast(parts.join(" • "), 4500);
+      toast(parts.length?parts.join(" • "):"No changes", 5000);
     }
     requestPersistence(false);
+    updateStorageStatus();
   }
 
   async function importPlaylistCover(e) {
@@ -257,16 +421,45 @@
     else queueIndex=queue.indexOf(id);
 
     currentId=id;
-    if(currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
-    currentObjectUrl=URL.createObjectURL(t.file);
-    audio.src=currentObjectUrl;
 
-    t.lastPlayed=Date.now(); t.playCount=(t.playCount||0)+1;
-    await GMDB.put("tracks",t);
-    await audio.play().catch(()=>{});
-    updatePlayerUI(t);
-    renderHome();
-    setMediaSession(t);
+    try{
+      // Lazy-upgrade any remaining v1.3 File record before playback.
+      if(!(t.audioBlob instanceof Blob) || !t.audioBlob.size){
+        if(t.file instanceof Blob){
+          const bytes=await t.file.arrayBuffer();
+          if(!bytes.byteLength) throw new Error("legacy file has no readable bytes");
+          t.audioBlob=new Blob([bytes],{type:t.file.type || t.mimeType || "application/octet-stream"});
+          t.fileName=t.file.name || t.fileName || t.title;
+          t.mimeType=t.file.type || t.mimeType || "";
+          delete t.file;
+          t.needsRepair=false;
+          await GMDB.put("tracks",t);
+        }else{
+          throw new Error("audio bytes missing");
+        }
+      }
+
+      // Verify IndexedDB actually returned readable bytes.
+      await t.audioBlob.slice(0,Math.min(8,t.audioBlob.size)).arrayBuffer();
+
+      if(currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+      currentObjectUrl=URL.createObjectURL(t.audioBlob);
+      audio.src=currentObjectUrl;
+
+      await audio.play();
+      t.needsRepair=false;
+      t.lastPlayed=Date.now();
+      t.playCount=(t.playCount||0)+1;
+      await GMDB.put("tracks",t);
+      updatePlayerUI(t);
+      renderHome();
+      setMediaSession(t);
+    }catch(err){
+      console.error("Playback failed",err);
+      t.needsRepair=true;
+      try{await GMDB.put("tracks",t)}catch{}
+      toast(`"${t.title}" needs to be re-imported from iCloud`,4500);
+    }
   }
 
   function setMediaSession(t){
@@ -457,7 +650,8 @@
       m.className="track-meta playlist-card-meta";
       m.innerHTML="<strong></strong><span></span>";
       m.querySelector("strong").textContent=p.name;
-      m.querySelector("span").textContent=`${p.trackIds.length} song${p.trackIds.length===1?"":"s"}`;
+      const pending=p.pendingTrackRefs?.length||0;
+      m.querySelector("span").textContent=`${playlistTotal(p)} song${playlistTotal(p)===1?"":"s"}${pending?` • ${pending} waiting for re-import`:""}`;
 
       const c=document.createElement("span");
       c.textContent="›";
@@ -476,7 +670,8 @@
     if(!p)return;
 
     $("#playlistDetailName").textContent=p.name;
-    $("#playlistDetailCount").textContent=`${p.trackIds.length} song${p.trackIds.length===1?"":"s"}`;
+    const pending=p.pendingTrackRefs?.length||0;
+    $("#playlistDetailCount").textContent=`${playlistTotal(p)} song${playlistTotal(p)===1?"":"s"}${pending?` • ${pending} waiting for re-import`:""}`;
 
     const cover=$("#playlistDetailCover");
     cover.innerHTML="";
@@ -493,9 +688,20 @@
     el.innerHTML="";
     const list=p.trackIds.map(trackById).filter(Boolean);
     list.forEach(t=>el.append(trackRow(t,p.trackIds,"playlist")));
-    if(!list.length)el.innerHTML='<p class="muted">No songs yet. Tap <strong>Add from Files</strong> to choose songs directly from iCloud Drive or Files.</p>';
+
+    if(!list.length && pending){
+      el.innerHTML=`<div class="recovery-note"><strong>Your playlist is remembered.</strong><br>${pending} song${pending===1?" is":"s are"} waiting for their audio files. Tap <b>Add from Files</b> and select those songs from iCloud; GhoulMusic will reconnect them automatically.</div>`;
+    }else if(pending){
+      const note=document.createElement("div");
+      note.className="recovery-note";
+      note.innerHTML=`<strong>${pending} more song${pending===1?"":"s"} remembered by your backup.</strong><br>Re-import them from iCloud and they will return to this playlist automatically.`;
+      el.append(note);
+    }else if(!list.length){
+      el.innerHTML='<p class="muted">No songs yet. Tap <strong>Add from Files</strong> to choose songs directly from iCloud Drive or Files.</p>';
+    }
     showView("playlistDetailView");
   }
+
   async function renameCurrentPlaylist(){
     const p=playlists.find(x=>x.id===currentPlaylistId);if(!p)return;
     const n=prompt("New playlist name",p.name);if(!n?.trim())return;p.name=n.trim();await GMDB.put("playlists",p);openPlaylist(p.id);renderPlaylists();
@@ -571,32 +777,39 @@
 
   async function exportData(){
     await migrateStableFingerprints();
+    const pending=await getPendingRestore();
+
+    const byId=new Map(tracks.map(t=>[t.id,t]));
+    const allSavedTracks=[
+      ...tracks.map(savedTrackRef),
+      ...(pending.tracks||[])
+    ].filter(Boolean);
+
+    // Dedupe saved track descriptors.
+    const unique=new Map();
+    for(const t of allSavedTracks){
+      const k=t.fingerprint || t.id || normalizedTrackKey(t);
+      if(k && !unique.has(k)) unique.set(k,t);
+    }
 
     const data={
       format:"GhoulMusicBackup",
-      version:3,
+      version:4,
       exportedAt:new Date().toISOString(),
       app:"GhoulMusic",
-      tracks:tracks.map(t=>({
-        id:t.id,
-        fingerprint:t.fingerprint || stableFingerprintFromLegacyId(t.id),
-        title:t.title,
-        artist:t.artist,
-        album:t.album,
-        genre:t.genre||"",
-        year:t.year||"",
-        liked:!!t.liked,
-        addedAt:t.addedAt||0,
-        lastPlayed:t.lastPlayed||0,
-        playCount:t.playCount||0
-      })),
-      playlists:playlists.map(p=>({
-        id:p.id,
-        name:p.name,
-        trackIds:[...(p.trackIds||[])],
-        cover:p.cover||null,
-        createdAt:p.createdAt||Date.now()
-      }))
+      tracks:[...unique.values()],
+      playlists:playlists.map(p=>{
+        const resolved=(p.trackIds||[]).map(id=>savedTrackRef(byId.get(id))).filter(Boolean);
+        const pendingRefs=[...(p.pendingTrackRefs||[])];
+        return {
+          id:p.id,
+          name:p.name,
+          trackIds:[...(p.trackIds||[])],
+          trackRefs:[...resolved,...pendingRefs],
+          cover:p.cover||null,
+          createdAt:p.createdAt||Date.now()
+        };
+      })
     };
 
     const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
@@ -620,54 +833,33 @@
     try{
       const raw=await file.text();
       const data=JSON.parse(raw);
-
       if(!data || !Array.isArray(data.tracks) || !Array.isArray(data.playlists)){
         throw new Error("Not a GhoulMusic backup");
       }
 
       await migrateStableFingerprints();
-
-      const currentByFingerprint=new Map();
-      const currentByKey=new Map();
-
-      for(const t of tracks){
-        const fp=t.fingerprint || stableFingerprintFromLegacyId(t.id);
-        if(fp) currentByFingerprint.set(fp,t);
-        currentByKey.set(normalizedTrackKey(t),t);
-      }
-
-      // Map old backup track IDs to the currently imported IDs.
-      const oldToCurrent=new Map();
+      const maps=buildTrackMaps();
+      const oldTrackById=new Map((data.tracks||[]).map(t=>[t.id,t]));
+      const unmatched=[];
       let matched=0;
 
       for(const saved of data.tracks){
-        const fp=saved.fingerprint || stableFingerprintFromLegacyId(saved.id);
-        let current=(fp && currentByFingerprint.get(fp)) || currentByKey.get(normalizedTrackKey(saved));
-
+        const current=findCurrentForSaved(saved,maps);
         if(current){
-          oldToCurrent.set(saved.id,current.id);
-          current.liked=!!saved.liked;
-          current.playCount=Math.max(current.playCount||0,saved.playCount||0);
-          current.lastPlayed=Math.max(current.lastPlayed||0,saved.lastPlayed||0);
-
-          // Preserve current parsed metadata unless it is generic/unknown.
-          if((!current.title || current.title==="Unknown") && saved.title) current.title=saved.title;
-          if((!current.artist || current.artist==="Unknown Artist") && saved.artist) current.artist=saved.artist;
-          if((!current.album || current.album==="Unknown Album") && saved.album) current.album=saved.album;
-
-          await GMDB.put("tracks",current);
+          await applySavedState(current,saved);
           matched++;
+        }else{
+          unmatched.push(saved);
         }
       }
 
-      // Restore playlists and remap their old track IDs.
-      const restored=[];
       for(const savedP of data.playlists){
         const existing=playlists.find(p=>p.id===savedP.id) || playlists.find(p=>p.name===savedP.name);
         const p=existing || {
           id:savedP.id || `pl-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,
           name:savedP.name || "Restored Playlist",
           trackIds:[],
+          pendingTrackRefs:[],
           createdAt:savedP.createdAt||Date.now()
         };
 
@@ -675,15 +867,31 @@
         p.cover=savedP.cover || p.cover || null;
         p.createdAt=savedP.createdAt || p.createdAt || Date.now();
 
-        const remapped=(savedP.trackIds||[])
-          .map(oldId=>oldToCurrent.get(oldId))
-          .filter(Boolean);
+        // v4 has trackRefs. v3 backups only have trackIds, so derive
+        // references from the global backup track list.
+        const refs=Array.isArray(savedP.trackRefs) && savedP.trackRefs.length
+          ? savedP.trackRefs
+          : (savedP.trackIds||[]).map(oldId=>oldTrackById.get(oldId)).filter(Boolean);
 
-        // Avoid duplicates.
-        p.trackIds=[...new Set(remapped)];
+        const resolvedIds=[];
+        const pendingRefs=[];
+        for(const ref of refs){
+          const current=findCurrentForSaved(ref,maps);
+          if(current){
+            resolvedIds.push(current.id);
+          }else{
+            pendingRefs.push(ref);
+          }
+        }
+
+        // Merge with any songs currently in the playlist to avoid data loss.
+        p.trackIds=[...new Set([...(p.trackIds||[]),...resolvedIds])];
+        p.pendingTrackRefs=pendingRefs;
         await GMDB.put("playlists",p);
-        restored.push(p);
       }
+
+      // Keep unmatched song state so Likes/play counts can also return later.
+      await setPendingRestore({tracks:unmatched});
 
       tracks=await GMDB.all("tracks");
       playlists=await GMDB.all("playlists");
@@ -691,13 +899,14 @@
       renderAll();
       updateStorageStatus();
 
-      const unmatched=Math.max(0,data.tracks.length-matched);
+      const waiting=unmatched.length;
       const status=$("#backupStatus");
       if(status){
-        status.textContent=`Restored ${data.playlists.length} playlist${data.playlists.length===1?"":"s"} and matched ${matched}/${data.tracks.length} songs.${unmatched ? " Re-import any missing songs from iCloud, then run Restore Backup again." : ""}`;
+        status.textContent=waiting
+          ? `Backup restored. ${matched} songs matched now; ${waiting} are remembered and will reconnect automatically when you re-import them from iCloud.`
+          : `Backup restored. All ${matched} songs matched.`;
       }
-
-      toast(unmatched ? `Restore finished • ${unmatched} song${unmatched===1?"":"s"} still need re-importing` : "Backup restored");
+      toast(waiting ? `Backup restored • ${waiting} songs waiting for re-import` : "Backup fully restored",5000);
     }catch(err){
       console.error(err);
       const status=$("#backupStatus");

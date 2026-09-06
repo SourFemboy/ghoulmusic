@@ -210,3 +210,17 @@ main{padding:8px 16px 0}
 #settingsView .settings-card{
   box-shadow:0 12px 35px rgba(0,0,0,.18);
 }
+
+
+/* GhoulMusic v1.4 recovery */
+.recovery-note{
+  margin:14px 0;
+  padding:16px;
+  border-radius:16px;
+  border:1px solid rgba(167,25,39,.45);
+  background:rgba(53,7,12,.62);
+  color:var(--muted);
+  line-height:1.45;
+  backdrop-filter:blur(10px);
+}
+.recovery-note strong{color:var(--text)}
