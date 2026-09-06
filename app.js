@@ -18,6 +18,8 @@
   let targetPlaylistTrackId = null;
   let importPlaylistId = null;
   let coverPlaylistId = null;
+  let playbackStartedAt = 0;
+  let lastPlaybackErrorAt = 0;
 
   const iconFallback = "./icons/icon-180.png";
 
@@ -197,6 +199,38 @@
     return (p.trackIds?.length||0)+(p.pendingTrackRefs?.length||0);
   }
 
+
+  function inferAudioMime(fileName="", supplied=""){
+    const s=(supplied||"").toLowerCase();
+    if(s.startsWith("audio/") && s!=="audio/mp3") return s;
+    const n=(fileName||"").toLowerCase();
+    if(n.endsWith(".mp3")) return "audio/mpeg";
+    if(n.endsWith(".m4a") || n.endsWith(".mp4")) return "audio/mp4";
+    if(n.endsWith(".aac")) return "audio/aac";
+    if(n.endsWith(".flac")) return "audio/flac";
+    if(n.endsWith(".wav")) return "audio/wav";
+    if(n.endsWith(".ogg")) return "audio/ogg";
+    if(n.endsWith(".opus")) return "audio/ogg";
+    return s.startsWith("audio/") ? s : "audio/mpeg";
+  }
+
+  function mediaExtension(t){
+    const name=(t.fileName||"").split("?")[0];
+    const m=name.match(/(\.[a-z0-9]{2,5})$/i);
+    if(m) return m[1].toLowerCase();
+    const mime=inferAudioMime(name,t.mimeType||t.audioBlob?.type||"");
+    if(mime.includes("mp4")) return ".m4a";
+    if(mime.includes("aac")) return ".aac";
+    if(mime.includes("flac")) return ".flac";
+    if(mime.includes("wav")) return ".wav";
+    if(mime.includes("ogg")) return ".ogg";
+    return ".mp3";
+  }
+
+  function localMediaUrl(t){
+    return `./__ghoulmusic_media__/${encodeURIComponent(t.id)}/track${mediaExtension(t)}`;
+  }
+
   function bind() {
     $("#settingsTop").addEventListener("click",()=>showView("settingsView"));
     $("#settingsBack").addEventListener("click",()=>showView("homeView"));
@@ -236,10 +270,26 @@
     audio.addEventListener("play", updatePlayButtons);
     audio.addEventListener("pause", updatePlayButtons);
     audio.addEventListener("error",()=>{
+      lastPlaybackErrorAt=Date.now();
       const t=trackById(currentId);
-      if(t) toast(`"${t.title}" could not play. Re-import it from iCloud.`,4500);
+      if(t) toast(`"${t.title}" hit a playback error. GhoulMusic will not auto-skip it.`,4500);
     });
-    audio.addEventListener("ended",()=> repeat==="one" ? (audio.currentTime=0,audio.play()) : nextTrack());
+    audio.addEventListener("ended",()=>{
+      const elapsed=Date.now()-playbackStartedAt;
+      if(Date.now()-lastPlaybackErrorAt<3000) return;
+      if(elapsed<12000){
+        const t=trackById(currentId);
+        if(t) toast(`"${t.title}" ended abnormally early. Try Re-import / Repair Songs.`,5000);
+        return;
+      }
+      if(repeat==="one"){
+        audio.currentTime=0;
+        playbackStartedAt=Date.now();
+        audio.play();
+      }else{
+        nextTrack();
+      }
+    });
 
     $("#queueBtn").addEventListener("click",()=>{renderQueue(); openModal("queueSheet")});
     $("#newPlaylist").addEventListener("click", createPlaylist);
@@ -288,7 +338,9 @@
         if (!file.type.startsWith("audio/") && !/\.(mp3|m4a|aac|flac|wav|ogg|opus)$/i.test(file.name)) { failed++; continue; }
 
         const meta = await GMMetadata.parse(file);
-        const audioBlob = await makeDurableAudioBlob(file);
+        const correctMime = inferAudioMime(file.name,file.type);
+        const rawBytes = await file.arrayBuffer();
+        const audioBlob = new Blob([rawBytes],{type:correctMime});
         if(!audioBlob.size) throw new Error("Audio file was empty");
 
         let track = await GMDB.get("tracks", meta.id);
@@ -298,7 +350,7 @@
           // while keeping likes, play history, etc.
           track.audioBlob=audioBlob;
           track.fileName=file.name;
-          track.mimeType=file.type || "";
+          track.mimeType=correctMime;
           track.needsRepair=false;
           track.artwork=meta.artwork || track.artwork || null;
           track.fingerprint=meta.fingerprint || track.fingerprint;
@@ -310,7 +362,7 @@
             ...meta,
             audioBlob,
             fileName:file.name,
-            mimeType:file.type || "",
+            mimeType:correctMime,
             artwork: meta.artwork || null,
             liked:false,
             addedAt:Date.now()+added,
@@ -423,14 +475,15 @@
     currentId=id;
 
     try{
-      // Lazy-upgrade any remaining v1.3 File record before playback.
       if(!(t.audioBlob instanceof Blob) || !t.audioBlob.size){
         if(t.file instanceof Blob){
           const bytes=await t.file.arrayBuffer();
           if(!bytes.byteLength) throw new Error("legacy file has no readable bytes");
-          t.audioBlob=new Blob([bytes],{type:t.file.type || t.mimeType || "application/octet-stream"});
-          t.fileName=t.file.name || t.fileName || t.title;
-          t.mimeType=t.file.type || t.mimeType || "";
+          const fn=t.file.name || t.fileName || `${t.title || "track"}.mp3`;
+          const mt=inferAudioMime(fn,t.file.type || t.mimeType || "");
+          t.audioBlob=new Blob([bytes],{type:mt});
+          t.fileName=fn;
+          t.mimeType=mt;
           delete t.file;
           t.needsRepair=false;
           await GMDB.put("tracks",t);
@@ -439,14 +492,28 @@
         }
       }
 
-      // Verify IndexedDB actually returned readable bytes.
       await t.audioBlob.slice(0,Math.min(8,t.audioBlob.size)).arrayBuffer();
 
-      if(currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
-      currentObjectUrl=URL.createObjectURL(t.audioBlob);
-      audio.src=currentObjectUrl;
+      if(currentObjectUrl){
+        URL.revokeObjectURL(currentObjectUrl);
+        currentObjectUrl=null;
+      }
 
+      if(navigator.serviceWorker?.controller){
+        audio.src=localMediaUrl(t);
+      }else{
+        const mt=inferAudioMime(t.fileName,t.mimeType||t.audioBlob.type);
+        const bytes=await t.audioBlob.arrayBuffer();
+        const fixedBlob=new Blob([bytes],{type:mt});
+        currentObjectUrl=URL.createObjectURL(fixedBlob);
+        audio.src=currentObjectUrl;
+      }
+
+      audio.load();
+      playbackStartedAt=Date.now();
+      lastPlaybackErrorAt=0;
       await audio.play();
+
       t.needsRepair=false;
       t.lastPlayed=Date.now();
       t.playCount=(t.playCount||0)+1;
