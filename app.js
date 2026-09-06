@@ -3,6 +3,7 @@
   const $$ = s => [...document.querySelectorAll(s)];
   const audio = $("#audio");
   const filePicker = $("#filePicker");
+  const playlistCoverPicker = $("#playlistCoverPicker");
 
   let tracks = [];
   let playlists = [];
@@ -14,6 +15,8 @@
   let shuffle = false;
   let repeat = "off";
   let targetPlaylistTrackId = null;
+  let importPlaylistId = null;
+  let coverPlaylistId = null;
 
   const iconFallback = "./icons/icon-180.png";
 
@@ -31,8 +34,12 @@
   }
 
   function bind() {
-    ["#addMusicTop","#addMusicHero","#addMusicLibrary"].forEach(s => $(s).addEventListener("click",()=>filePicker.click()));
+    ["#addMusicTop","#addMusicHero","#addMusicLibrary"].forEach(s => $(s).addEventListener("click",()=>{
+      importPlaylistId = null;
+      filePicker.click();
+    }));
     filePicker.addEventListener("change", importFiles);
+    playlistCoverPicker.addEventListener("change", importPlaylistCover);
 
     $$(".nav-btn").forEach(b => b.addEventListener("click",()=>showView(b.dataset.view)));
     $("#searchInput").addEventListener("input", renderSearch);
@@ -68,7 +75,17 @@
     $("#playlistBack").addEventListener("click",()=>showView("playlistsView"));
     $("#renameCurrentPlaylist").addEventListener("click", renameCurrentPlaylist);
     $("#deleteCurrentPlaylist").addEventListener("click", deleteCurrentPlaylist);
+    $("#addFilesToCurrentPlaylist").addEventListener("click",()=>{
+      if(!currentPlaylistId) return;
+      importPlaylistId = currentPlaylistId;
+      filePicker.click();
+    });
     $("#addToCurrentPlaylist").addEventListener("click",()=>openPlaylistTrackPicker(currentPlaylistId));
+    $("#changePlaylistCover").addEventListener("click",()=>{
+      if(!currentPlaylistId) return;
+      coverPlaylistId = currentPlaylistId;
+      playlistCoverPicker.click();
+    });
     $("#addCurrentToPlaylist").addEventListener("click",()=>openPlaylistPicker(currentId));
 
     $$("[data-close-modal]").forEach(b=>b.addEventListener("click",()=>closeModal(b.dataset.closeModal)));
@@ -80,32 +97,121 @@
 
   async function importFiles(e) {
     const files = [...e.target.files];
+    const destinationPlaylistId = importPlaylistId;
+    importPlaylistId = null;
     if (!files.length) return;
-    toast(`Importing ${files.length} song${files.length===1?"":"s"}…`, 5000);
-    let added=0, skipped=0, failed=0;
+
+    const destination = destinationPlaylistId ? playlists.find(p=>p.id===destinationPlaylistId) : null;
+    toast(destination ? `Adding ${files.length} song${files.length===1?"":"s"} to ${destination.name}…` : `Importing ${files.length} song${files.length===1?"":"s"}…`, 5000);
+
+    let added=0, existing=0, failed=0, addedToPlaylist=0;
+
     for (const file of files) {
       try {
         if (!file.type.startsWith("audio/") && !/\.(mp3|m4a|aac|flac|wav|ogg|opus)$/i.test(file.name)) { failed++; continue; }
+
         const meta = await GMMetadata.parse(file);
-        if (await GMDB.get("tracks", meta.id)) { skipped++; continue; }
-        const track = {
-          ...meta,
-          file,
-          artwork: meta.artwork || null,
-          liked:false,
-          addedAt:Date.now()+added,
-          lastPlayed:0,
-          playCount:0
-        };
-        await GMDB.put("tracks", track);
-        tracks.unshift(track); added++;
-      } catch(err) { console.error(err); failed++; }
+        let track = await GMDB.get("tracks", meta.id);
+
+        if (track) {
+          existing++;
+        } else {
+          track = {
+            ...meta,
+            file,
+            artwork: meta.artwork || null,
+            liked:false,
+            addedAt:Date.now()+added,
+            lastPlayed:0,
+            playCount:0
+          };
+          await GMDB.put("tracks", track);
+          tracks.unshift(track);
+          added++;
+        }
+
+        if (destination && !destination.trackIds.includes(track.id)) {
+          destination.trackIds.push(track.id);
+          addedToPlaylist++;
+        }
+      } catch(err) {
+        console.error(err);
+        failed++;
+      }
     }
+
+    if (destination) {
+      await GMDB.put("playlists", destination);
+    }
+
     filePicker.value="";
     renderAll();
-    const parts=[`${added} added`]; if(skipped)parts.push(`${skipped} duplicates skipped`); if(failed)parts.push(`${failed} couldn't import`);
-    toast(parts.join(" • "), 4500);
+
+    if (destination) {
+      openPlaylist(destination.id);
+      const parts=[`${addedToPlaylist} added to playlist`];
+      if (added) parts.push(`${added} new to library`);
+      if (existing) parts.push(`${existing} already in library`);
+      if (failed) parts.push(`${failed} couldn't import`);
+      toast(parts.join(" • "), 4500);
+    } else {
+      const parts=[`${added} added`];
+      if(existing) parts.push(`${existing} duplicates skipped`);
+      if(failed) parts.push(`${failed} couldn't import`);
+      toast(parts.join(" • "), 4500);
+    }
     requestPersistence(false);
+  }
+
+  async function importPlaylistCover(e) {
+    const file = e.target.files?.[0];
+    const playlistId = coverPlaylistId;
+    coverPlaylistId = null;
+    playlistCoverPicker.value = "";
+    if (!file || !playlistId) return;
+
+    const p = playlists.find(x=>x.id===playlistId);
+    if (!p) return;
+
+    try {
+      p.cover = await makePlaylistCover(file);
+      await GMDB.put("playlists", p);
+      renderPlaylists();
+      if (currentPlaylistId === p.id) openPlaylist(p.id);
+      toast("Playlist photo updated");
+    } catch(err) {
+      console.error(err);
+      toast("Couldn't use that photo");
+    }
+  }
+
+  function makePlaylistCover(file) {
+    return new Promise((resolve, reject)=>{
+      const reader = new FileReader();
+      reader.onerror = ()=>reject(reader.error);
+      reader.onload = ()=>{
+        const img = new Image();
+        img.onerror = ()=>reject(new Error("Image could not be read"));
+        img.onload = ()=>{
+          const size = 700;
+          const canvas = document.createElement("canvas");
+          canvas.width = size;
+          canvas.height = size;
+          const ctx = canvas.getContext("2d");
+
+          const scale = Math.max(size / img.width, size / img.height);
+          const w = img.width * scale;
+          const h = img.height * scale;
+          const x = (size - w) / 2;
+          const y = (size - h) / 2;
+
+          ctx.drawImage(img, x, y, w, h);
+          resolve(canvas.toDataURL("image/jpeg", .86));
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
   }
 
   function trackById(id){ return tracks.find(t=>t.id===id); }
@@ -290,24 +396,70 @@
 
   async function createPlaylist(){
     const name=prompt("Playlist name"); if(!name?.trim())return;
-    const p={id:`pl-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,name:name.trim(),trackIds:[],createdAt:Date.now()};
-    await GMDB.put("playlists",p);playlists.push(p);renderPlaylists();toast("Playlist created");
+    const p={id:`pl-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,name:name.trim(),trackIds:[],cover:null,createdAt:Date.now()};
+    await GMDB.put("playlists",p);
+    playlists.push(p);
+    renderPlaylists();
+    openPlaylist(p.id);
+    toast("Playlist created — add songs straight from Files");
   }
   function renderPlaylists(){
     const el=$("#playlistList");if(!el)return;el.innerHTML="";
     [...playlists].sort((a,b)=>b.createdAt-a.createdAt).forEach(p=>{
-      const b=document.createElement("button");b.className="playlist-card";
-      const m=document.createElement("div");m.className="track-meta";m.innerHTML="<strong></strong><span></span>";m.querySelector("strong").textContent=p.name;m.querySelector("span").textContent=`${p.trackIds.length} song${p.trackIds.length===1?"":"s"}`;
-      const c=document.createElement("span");c.textContent="›";c.style.fontSize="28px";b.append(m,c);b.onclick=()=>openPlaylist(p.id);el.append(b);
+      const b=document.createElement("button");b.className="playlist-card playlist-card-with-cover";
+
+      const cover=document.createElement("div");
+      cover.className="playlist-thumb";
+      if(p.cover){
+        const img=document.createElement("img");
+        img.src=p.cover;
+        img.alt="";
+        cover.append(img);
+      } else {
+        cover.textContent="♫";
+      }
+
+      const m=document.createElement("div");
+      m.className="track-meta playlist-card-meta";
+      m.innerHTML="<strong></strong><span></span>";
+      m.querySelector("strong").textContent=p.name;
+      m.querySelector("span").textContent=`${p.trackIds.length} song${p.trackIds.length===1?"":"s"}`;
+
+      const c=document.createElement("span");
+      c.textContent="›";
+      c.style.fontSize="28px";
+
+      b.append(cover,m,c);
+      b.onclick=()=>openPlaylist(p.id);
+      el.append(b);
     });
-    if(!playlists.length)el.innerHTML='<p class="muted">Create playlists for whatever you want — driving, anime, goth, sleep, favorites, anything.</p>';
+    if(!playlists.length)el.innerHTML='<p class="muted">Create a playlist, then import songs directly from Files and give it a custom photo.</p>';
   }
+
   function openPlaylist(id){
-    currentPlaylistId=id; const p=playlists.find(x=>x.id===id);if(!p)return;
-    $("#playlistDetailName").textContent=p.name;$("#playlistDetailCount").textContent=`${p.trackIds.length} song${p.trackIds.length===1?"":"s"}`;
-    const el=$("#playlistDetailList");el.innerHTML="";
-    const list=p.trackIds.map(trackById).filter(Boolean);list.forEach(t=>el.append(trackRow(t,p.trackIds,"playlist")));
-    if(!list.length)el.innerHTML='<p class="muted">This playlist is empty.</p>';
+    currentPlaylistId=id;
+    const p=playlists.find(x=>x.id===id);
+    if(!p)return;
+
+    $("#playlistDetailName").textContent=p.name;
+    $("#playlistDetailCount").textContent=`${p.trackIds.length} song${p.trackIds.length===1?"":"s"}`;
+
+    const cover=$("#playlistDetailCover");
+    cover.innerHTML="";
+    if(p.cover){
+      const img=document.createElement("img");
+      img.src=p.cover;
+      img.alt="";
+      cover.append(img);
+    } else {
+      cover.textContent="♫";
+    }
+
+    const el=$("#playlistDetailList");
+    el.innerHTML="";
+    const list=p.trackIds.map(trackById).filter(Boolean);
+    list.forEach(t=>el.append(trackRow(t,p.trackIds,"playlist")));
+    if(!list.length)el.innerHTML='<p class="muted">No songs yet. Tap <strong>Add from Files</strong> to choose songs directly from iCloud Drive or Files.</p>';
     showView("playlistDetailView");
   }
   async function renameCurrentPlaylist(){

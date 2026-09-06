@@ -1,4 +1,4 @@
-const CACHE="ghoulmusic-shell-v2-blood";
+const CACHE="ghoulmusic-shell-v3-playlists";
 const ASSETS=[
   "./","./index.html","./styles.css","./db.js","./metadata.js","./app.js",
   "./manifest.webmanifest","./background.jpg","./icons/icon-180.png","./icons/icon-192.png","./icons/icon-512.png"

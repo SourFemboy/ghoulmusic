@@ -152,3 +152,40 @@ main{padding:8px 16px 0}
   .album-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
   .topbar{padding-left:max(20px,calc((100vw - 850px)/2));padding-right:max(20px,calc((100vw - 850px)/2))}
 }
+
+
+/* GhoulMusic v1.2 playlist upgrades */
+.playlist-card-with-cover{
+  display:grid;
+  grid-template-columns:58px minmax(0,1fr) auto;
+  gap:13px;
+  align-items:center;
+  width:100%;
+  text-align:left;
+}
+.playlist-card-meta{min-width:0}
+.playlist-thumb{
+  width:58px;
+  height:58px;
+  border-radius:12px;
+  overflow:hidden;
+  display:grid;
+  place-items:center;
+  flex:none;
+  font-size:25px;
+  background:linear-gradient(145deg,#3a070b,#8d1119);
+  border:1px solid rgba(255,255,255,.10);
+}
+.playlist-thumb img,
+.playlist-detail-cover img{
+  width:100%;
+  height:100%;
+  object-fit:cover;
+}
+.playlist-detail-cover{
+  overflow:hidden;
+  flex:none;
+}
+.playlist-actions .primary-btn{
+  align-self:auto;
+}

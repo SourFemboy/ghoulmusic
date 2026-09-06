@@ -88,7 +88,7 @@
       <section id="playlistDetailView" class="view">
         <button id="playlistBack" class="back-btn">‹ Playlists</button>
         <div class="collection-hero">
-          <div class="collection-icon">♫</div>
+          <div id="playlistDetailCover" class="collection-icon playlist-detail-cover">♫</div>
           <div>
             <div class="eyebrow">PLAYLIST</div>
             <h2 id="playlistDetailName">Playlist</h2>
@@ -96,7 +96,9 @@
           </div>
         </div>
         <div class="playlist-actions">
-          <button id="addToCurrentPlaylist" class="secondary-btn">Add Songs</button>
+          <button id="addFilesToCurrentPlaylist" class="primary-btn compact">Add from Files</button>
+          <button id="addToCurrentPlaylist" class="secondary-btn">Add from Library</button>
+          <button id="changePlaylistCover" class="secondary-btn">Change Photo</button>
           <button id="renameCurrentPlaylist" class="secondary-btn">Rename</button>
           <button id="deleteCurrentPlaylist" class="danger-btn">Delete</button>
         </div>
@@ -186,6 +188,7 @@
     </div>
 
     <input id="filePicker" type="file" accept="audio/*,.mp3,.m4a,.aac,.flac,.wav,.ogg,.opus" multiple hidden>
+    <input id="playlistCoverPicker" type="file" accept="image/*" hidden>
     <audio id="audio" preload="metadata"></audio>
     <div id="toast" class="toast hidden"></div>
   </div>
