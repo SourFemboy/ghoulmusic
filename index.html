@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#09070d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="GhoulMusic">
+  <title>GhoulMusic</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icons/icon-180.png">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">YOUR PRIVATE LIBRARY</div>
+        <h1>GhoulMusic</h1>
+      </div>
+      <button id="addMusicTop" class="icon-btn" aria-label="Add music">＋</button>
+    </header>
+
+    <main id="main">
+      <section id="homeView" class="view active">
+        <div class="hero">
+          <div>
+            <div class="eyebrow">NO ADS • NO SUBSCRIPTION</div>
+            <h2>Your music. Your rules.</h2>
+            <p id="heroSub">Import songs from iCloud Drive or Files and keep listening offline.</p>
+          </div>
+          <button id="addMusicHero" class="primary-btn">Add Music</button>
+        </div>
+
+        <section class="section">
+          <div class="section-head"><h3>Recently played</h3></div>
+          <div id="recentGrid" class="album-grid empty-state">Nothing played yet.</div>
+        </section>
+
+        <section class="section">
+          <div class="section-head"><h3>Recently added</h3></div>
+          <div id="addedGrid" class="album-grid empty-state">Your imported songs will appear here.</div>
+        </section>
+      </section>
+
+      <section id="searchView" class="view">
+        <div class="search-wrap">
+          <span>⌕</span>
+          <input id="searchInput" type="search" placeholder="Songs, artists, albums…" autocomplete="off">
+        </div>
+        <div id="searchResults" class="track-list"></div>
+      </section>
+
+      <section id="libraryView" class="view">
+        <div class="library-head">
+          <h2>Your Library</h2>
+          <button id="addMusicLibrary" class="primary-btn compact">Add Music</button>
+        </div>
+        <div class="segmented" role="tablist">
+          <button class="seg active" data-library="songs">Songs</button>
+          <button class="seg" data-library="artists">Artists</button>
+          <button class="seg" data-library="albums">Albums</button>
+        </div>
+        <div id="libraryContent"></div>
+      </section>
+
+      <section id="likedView" class="view">
+        <div class="collection-hero liked-hero">
+          <div class="collection-icon">♥</div>
+          <div>
+            <div class="eyebrow">PLAYLIST</div>
+            <h2>Liked Songs</h2>
+            <p id="likedCount">0 songs</p>
+          </div>
+        </div>
+        <div id="likedList" class="track-list"></div>
+      </section>
+
+      <section id="playlistsView" class="view">
+        <div class="library-head">
+          <h2>Playlists</h2>
+          <button id="newPlaylist" class="primary-btn compact">New</button>
+        </div>
+        <div id="playlistList" class="playlist-list"></div>
+      </section>
+
+      <section id="playlistDetailView" class="view">
+        <button id="playlistBack" class="back-btn">‹ Playlists</button>
+        <div class="collection-hero">
+          <div class="collection-icon">♫</div>
+          <div>
+            <div class="eyebrow">PLAYLIST</div>
+            <h2 id="playlistDetailName">Playlist</h2>
+            <p id="playlistDetailCount">0 songs</p>
+          </div>
+        </div>
+        <div class="playlist-actions">
+          <button id="addToCurrentPlaylist" class="secondary-btn">Add Songs</button>
+          <button id="renameCurrentPlaylist" class="secondary-btn">Rename</button>
+          <button id="deleteCurrentPlaylist" class="danger-btn">Delete</button>
+        </div>
+        <div id="playlistDetailList" class="track-list"></div>
+      </section>
+
+      <section id="settingsView" class="view">
+        <h2>Settings</h2>
+        <div class="settings-card">
+          <h3>Storage</h3>
+          <p>Your imported music is stored privately by this web app on this iPhone. Keep your originals in iCloud as your backup.</p>
+          <button id="requestPersistent" class="secondary-btn">Protect Local Storage</button>
+          <div id="storageStatus" class="muted"></div>
+        </div>
+        <div class="settings-card">
+          <h3>Library tools</h3>
+          <button id="exportLibrary" class="secondary-btn">Export Library Data</button>
+          <button id="clearLibrary" class="danger-btn">Delete Local Library</button>
+        </div>
+        <div class="settings-card">
+          <h3>About</h3>
+          <p>GhoulMusic v1.0 — a private, local-first personal music player.</p>
+        </div>
+      </section>
+    </main>
+
+    <aside id="miniPlayer" class="mini-player hidden">
+      <img id="miniCover" src="./icons/icon-180.png" alt="">
+      <button id="miniMeta" class="mini-meta">
+        <strong id="miniTitle">Not playing</strong>
+        <span id="miniArtist"></span>
+      </button>
+      <button id="miniLike" class="mini-action" aria-label="Like">♡</button>
+      <button id="miniPlay" class="mini-action play" aria-label="Play">▶</button>
+    </aside>
+
+    <nav class="bottom-nav">
+      <button class="nav-btn active" data-view="homeView"><span>⌂</span><small>Home</small></button>
+      <button class="nav-btn" data-view="searchView"><span>⌕</span><small>Search</small></button>
+      <button class="nav-btn" data-view="libraryView"><span>▤</span><small>Library</small></button>
+      <button class="nav-btn" data-view="likedView"><span>♥</span><small>Liked</small></button>
+      <button class="nav-btn" data-view="playlistsView"><span>♫</span><small>Playlists</small></button>
+    </nav>
+
+    <div id="nowPlayingSheet" class="sheet hidden" aria-hidden="true">
+      <div class="sheet-inner">
+        <div class="sheet-handle"></div>
+        <button id="closePlayer" class="sheet-close">⌄</button>
+        <img id="nowCover" class="now-cover" src="./icons/icon-512.png" alt="">
+        <div class="now-meta">
+          <div>
+            <h2 id="nowTitle">Song</h2>
+            <p id="nowArtist">Artist</p>
+          </div>
+          <button id="nowLike" class="heart-btn">♡</button>
+        </div>
+        <div class="progress-row">
+          <input id="seek" type="range" min="0" max="100" value="0">
+          <div class="times"><span id="currentTime">0:00</span><span id="duration">0:00</span></div>
+        </div>
+        <div class="player-controls">
+          <button id="shuffleBtn" class="control small">⤨</button>
+          <button id="prevBtn" class="control">◀</button>
+          <button id="mainPlay" class="control main">▶</button>
+          <button id="nextBtn" class="control">▶</button>
+          <button id="repeatBtn" class="control small">↻</button>
+        </div>
+        <div class="now-extra">
+          <button id="queueBtn" class="secondary-btn">Queue</button>
+          <button id="addCurrentToPlaylist" class="secondary-btn">Add to Playlist</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="queueSheet" class="modal hidden">
+      <div class="modal-card tall">
+        <div class="modal-head"><h3>Queue</h3><button data-close-modal="queueSheet">×</button></div>
+        <div id="queueList" class="track-list"></div>
+      </div>
+    </div>
+
+    <div id="playlistPicker" class="modal hidden">
+      <div class="modal-card">
+        <div class="modal-head"><h3>Add to playlist</h3><button data-close-modal="playlistPicker">×</button></div>
+        <div id="playlistPickerList" class="playlist-list"></div>
+      </div>
+    </div>
+
+    <input id="filePicker" type="file" accept="audio/*,.mp3,.m4a,.aac,.flac,.wav,.ogg,.opus" multiple hidden>
+    <audio id="audio" preload="metadata"></audio>
+    <div id="toast" class="toast hidden"></div>
+  </div>
+  <script src="./db.js"></script>
+  <script src="./metadata.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
