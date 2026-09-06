@@ -189,3 +189,24 @@ main{padding:8px 16px 0}
 .playlist-actions .primary-btn{
   align-self:auto;
 }
+
+
+/* GhoulMusic v1.3 safety/settings */
+.top-actions{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.settings-icon-btn{
+  width:44px;
+  height:44px;
+  font-size:20px;
+  background:rgba(18,8,9,.78);
+}
+.settings-status{
+  margin-top:12px;
+  font-size:12px;
+}
+#settingsView .settings-card{
+  box-shadow:0 12px 35px rgba(0,0,0,.18);
+}

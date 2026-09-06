@@ -7,12 +7,18 @@ const GMMetadata = (() => {
   }
 
   async function hashFile(file) {
-    // Fingerprint enough information to prevent accidental duplicate imports.
+    // Keep the original ID behavior, but also create a stable fingerprint
+    // that does not depend on the file's modified date. This lets backups
+    // reconnect playlists after the same audio is re-imported later.
     const head = await file.slice(0, Math.min(file.size, 65536)).arrayBuffer();
     const bytes = new Uint8Array(head);
     let h1 = 2166136261;
     for (const b of bytes) { h1 ^= b; h1 = Math.imul(h1, 16777619); }
-    return `${file.size}-${file.lastModified}-${(h1>>>0).toString(16)}`;
+    const hash = (h1>>>0).toString(16);
+    return {
+      id: `${file.size}-${file.lastModified}-${hash}`,
+      fingerprint: `${file.size}-${hash}`
+    };
   }
 
   function decodeText(bytes, encodingByte=3) {
@@ -82,13 +88,15 @@ const GMMetadata = (() => {
   }
 
   async function parse(file) {
-    const id = await hashFile(file);
+    const hashed = await hashFile(file);
+    const id = hashed.id;
     let meta = {};
     if (/\.mp3$/i.test(file.name) || file.type === "audio/mpeg") {
       try { meta = await parseID3(file); } catch {}
     }
     return {
       id,
+      fingerprint: hashed.fingerprint,
       title: meta.title || safeName(file.name),
       artist: meta.artist || "Unknown Artist",
       album: meta.album || "Unknown Album",

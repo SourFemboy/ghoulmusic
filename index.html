@@ -19,7 +19,10 @@
         <div class="eyebrow">YOUR PRIVATE LIBRARY</div>
         <h1>GhoulMusic</h1>
       </div>
-      <button id="addMusicTop" class="icon-btn" aria-label="Add music">＋</button>
+      <div class="top-actions">
+        <button id="settingsTop" class="icon-btn settings-icon-btn" aria-label="Settings">⚙</button>
+        <button id="addMusicTop" class="icon-btn" aria-label="Add music">＋</button>
+      </div>
     </header>
 
     <main id="main">
@@ -106,21 +109,39 @@
       </section>
 
       <section id="settingsView" class="view">
-        <h2>Settings</h2>
-        <div class="settings-card">
-          <h3>Storage</h3>
-          <p>Your imported music is stored privately by this web app on this iPhone. Keep your originals in iCloud as your backup.</p>
-          <button id="requestPersistent" class="secondary-btn">Protect Local Storage</button>
-          <div id="storageStatus" class="muted"></div>
+        <div class="library-head">
+          <h2>Settings</h2>
+          <button id="settingsBack" class="secondary-btn">Done</button>
         </div>
+
+        <div class="settings-card">
+          <h3>Protect local music</h3>
+          <p>GhoulMusic can ask iOS to treat its local database as persistent storage. This helps protect it from automatic cleanup, but removing GhoulMusic from your Home Screen can still erase local app data.</p>
+          <button id="requestPersistent" class="primary-btn compact">Protect Local Storage</button>
+          <div id="storageStatus" class="muted settings-status"></div>
+        </div>
+
+        <div class="settings-card">
+          <h3>Backup to iCloud / Files</h3>
+          <p>The backup saves playlists, custom playlist photos, likes, play counts, recent-play history, and song organization. It does not duplicate your audio files.</p>
+          <button id="exportLibrary" class="secondary-btn">Save GhoulMusic Backup</button>
+          <button id="restoreLibrary" class="secondary-btn">Restore Backup</button>
+          <div id="backupStatus" class="muted settings-status"></div>
+        </div>
+
+        <div class="settings-card">
+          <h3>Recommended recovery order</h3>
+          <p>After reinstalling GhoulMusic: first import your songs again from iCloud, then restore your GhoulMusic backup. The app will match the re-imported tracks back to your playlists and likes.</p>
+        </div>
+
         <div class="settings-card">
           <h3>Library tools</h3>
-          <button id="exportLibrary" class="secondary-btn">Export Library Data</button>
           <button id="clearLibrary" class="danger-btn">Delete Local Library</button>
         </div>
+
         <div class="settings-card">
           <h3>About</h3>
-          <p>GhoulMusic v1.0 — a private, local-first personal music player.</p>
+          <p>GhoulMusic v1.3 — private, offline-first personal music for iPhone.</p>
         </div>
       </section>
     </main>
@@ -189,6 +210,7 @@
 
     <input id="filePicker" type="file" accept="audio/*,.mp3,.m4a,.aac,.flac,.wav,.ogg,.opus" multiple hidden>
     <input id="playlistCoverPicker" type="file" accept="image/*" hidden>
+    <input id="backupPicker" type="file" accept="application/json,.json" hidden>
     <audio id="audio" preload="metadata"></audio>
     <div id="toast" class="toast hidden"></div>
   </div>

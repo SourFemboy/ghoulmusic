@@ -4,6 +4,7 @@
   const audio = $("#audio");
   const filePicker = $("#filePicker");
   const playlistCoverPicker = $("#playlistCoverPicker");
+  const backupPicker = $("#backupPicker");
 
   let tracks = [];
   let playlists = [];
@@ -24,6 +25,7 @@
     await GMDB.open();
     tracks = await GMDB.all("tracks");
     playlists = await GMDB.all("playlists");
+    await migrateStableFingerprints();
     tracks.sort((a,b)=>b.addedAt-a.addedAt);
     bind();
     renderAll();
@@ -33,7 +35,37 @@
     }
   }
 
+  function stableFingerprintFromLegacyId(id){
+    const m = String(id||"").match(/^(\d+)-\d+-([0-9a-f]+)$/i);
+    return m ? `${m[1]}-${m[2]}` : "";
+  }
+
+  function normalizedTrackKey(t){
+    return [
+      (t.title||"").trim().toLowerCase(),
+      (t.artist||"").trim().toLowerCase(),
+      (t.album||"").trim().toLowerCase()
+    ].join("|");
+  }
+
+  async function migrateStableFingerprints(){
+    let changed = 0;
+    for(const t of tracks){
+      if(!t.fingerprint){
+        t.fingerprint = stableFingerprintFromLegacyId(t.id);
+        if(t.fingerprint){
+          await GMDB.put("tracks", t);
+          changed++;
+        }
+      }
+    }
+    return changed;
+  }
+
   function bind() {
+    $("#settingsTop").addEventListener("click",()=>showView("settingsView"));
+    $("#settingsBack").addEventListener("click",()=>showView("homeView"));
+
     ["#addMusicTop","#addMusicHero","#addMusicLibrary"].forEach(s => $(s).addEventListener("click",()=>{
       importPlaylistId = null;
       filePicker.click();
@@ -90,8 +122,10 @@
 
     $$("[data-close-modal]").forEach(b=>b.addEventListener("click",()=>closeModal(b.dataset.closeModal)));
 
-    $("#requestPersistent").addEventListener("click", requestPersistence);
+    $("#requestPersistent").addEventListener("click",()=>requestPersistence(true));
     $("#exportLibrary").addEventListener("click", exportData);
+    $("#restoreLibrary").addEventListener("click",()=>backupPicker.click());
+    backupPicker.addEventListener("change", restoreData);
     $("#clearLibrary").addEventListener("click", clearLibrary);
   }
 
@@ -531,26 +565,154 @@
       const used=(est.usage/1024/1024).toFixed(1);
       const quota=(est.quota/1024/1024/1024).toFixed(1);
       const persisted=navigator.storage.persisted?await navigator.storage.persisted():false;
-      el.textContent=`GhoulMusic is using about ${used} MB. Browser storage allowance: about ${quota} GB. Protected: ${persisted?"Yes":"Not confirmed"}.`;
+      el.textContent=`Local GhoulMusic storage: about ${used} MB • allowance about ${quota} GB • persistent protection: ${persisted?"ON":"not confirmed"}.`;
     }catch{el.textContent="Storage information unavailable."}
   }
 
   async function exportData(){
+    await migrateStableFingerprints();
+
     const data={
+      format:"GhoulMusicBackup",
+      version:3,
       exportedAt:new Date().toISOString(),
-      tracks:tracks.map(({file,artwork,...t})=>t),
-      playlists
+      app:"GhoulMusic",
+      tracks:tracks.map(t=>({
+        id:t.id,
+        fingerprint:t.fingerprint || stableFingerprintFromLegacyId(t.id),
+        title:t.title,
+        artist:t.artist,
+        album:t.album,
+        genre:t.genre||"",
+        year:t.year||"",
+        liked:!!t.liked,
+        addedAt:t.addedAt||0,
+        lastPlayed:t.lastPlayed||0,
+        playCount:t.playCount||0
+      })),
+      playlists:playlists.map(p=>({
+        id:p.id,
+        name:p.name,
+        trackIds:[...(p.trackIds||[])],
+        cover:p.cover||null,
+        createdAt:p.createdAt||Date.now()
+      }))
     };
+
     const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
-    const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="GhoulMusic-library-backup.json";a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
-    toast("Library data exported");
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    const stamp=new Date().toISOString().slice(0,10);
+    a.download=`GhoulMusic-Backup-${stamp}.json`;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+
+    const status=$("#backupStatus");
+    if(status) status.textContent=`Backup created ${new Date().toLocaleString()}. Save it in iCloud Drive.`;
+    toast("GhoulMusic backup created");
+  }
+
+  async function restoreData(e){
+    const file=e.target.files?.[0];
+    backupPicker.value="";
+    if(!file) return;
+
+    try{
+      const raw=await file.text();
+      const data=JSON.parse(raw);
+
+      if(!data || !Array.isArray(data.tracks) || !Array.isArray(data.playlists)){
+        throw new Error("Not a GhoulMusic backup");
+      }
+
+      await migrateStableFingerprints();
+
+      const currentByFingerprint=new Map();
+      const currentByKey=new Map();
+
+      for(const t of tracks){
+        const fp=t.fingerprint || stableFingerprintFromLegacyId(t.id);
+        if(fp) currentByFingerprint.set(fp,t);
+        currentByKey.set(normalizedTrackKey(t),t);
+      }
+
+      // Map old backup track IDs to the currently imported IDs.
+      const oldToCurrent=new Map();
+      let matched=0;
+
+      for(const saved of data.tracks){
+        const fp=saved.fingerprint || stableFingerprintFromLegacyId(saved.id);
+        let current=(fp && currentByFingerprint.get(fp)) || currentByKey.get(normalizedTrackKey(saved));
+
+        if(current){
+          oldToCurrent.set(saved.id,current.id);
+          current.liked=!!saved.liked;
+          current.playCount=Math.max(current.playCount||0,saved.playCount||0);
+          current.lastPlayed=Math.max(current.lastPlayed||0,saved.lastPlayed||0);
+
+          // Preserve current parsed metadata unless it is generic/unknown.
+          if((!current.title || current.title==="Unknown") && saved.title) current.title=saved.title;
+          if((!current.artist || current.artist==="Unknown Artist") && saved.artist) current.artist=saved.artist;
+          if((!current.album || current.album==="Unknown Album") && saved.album) current.album=saved.album;
+
+          await GMDB.put("tracks",current);
+          matched++;
+        }
+      }
+
+      // Restore playlists and remap their old track IDs.
+      const restored=[];
+      for(const savedP of data.playlists){
+        const existing=playlists.find(p=>p.id===savedP.id) || playlists.find(p=>p.name===savedP.name);
+        const p=existing || {
+          id:savedP.id || `pl-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,
+          name:savedP.name || "Restored Playlist",
+          trackIds:[],
+          createdAt:savedP.createdAt||Date.now()
+        };
+
+        p.name=savedP.name || p.name;
+        p.cover=savedP.cover || p.cover || null;
+        p.createdAt=savedP.createdAt || p.createdAt || Date.now();
+
+        const remapped=(savedP.trackIds||[])
+          .map(oldId=>oldToCurrent.get(oldId))
+          .filter(Boolean);
+
+        // Avoid duplicates.
+        p.trackIds=[...new Set(remapped)];
+        await GMDB.put("playlists",p);
+        restored.push(p);
+      }
+
+      tracks=await GMDB.all("tracks");
+      playlists=await GMDB.all("playlists");
+      tracks.sort((a,b)=>b.addedAt-a.addedAt);
+      renderAll();
+      updateStorageStatus();
+
+      const unmatched=Math.max(0,data.tracks.length-matched);
+      const status=$("#backupStatus");
+      if(status){
+        status.textContent=`Restored ${data.playlists.length} playlist${data.playlists.length===1?"":"s"} and matched ${matched}/${data.tracks.length} songs.${unmatched ? " Re-import any missing songs from iCloud, then run Restore Backup again." : ""}`;
+      }
+
+      toast(unmatched ? `Restore finished • ${unmatched} song${unmatched===1?"":"s"} still need re-importing` : "Backup restored");
+    }catch(err){
+      console.error(err);
+      const status=$("#backupStatus");
+      if(status) status.textContent="That file could not be restored. Make sure it is a GhoulMusic backup JSON file.";
+      toast("Backup restore failed");
+    }
   }
 
   async function clearLibrary(){
     if(!confirm("Delete every locally imported song and playlist from GhoulMusic on this iPhone? Your originals in iCloud will not be touched."))return;
     if(!confirm("This cannot be undone inside GhoulMusic. Continue?"))return;
     audio.pause();audio.removeAttribute("src");currentId=null;queue=[];$("#miniPlayer").classList.add("hidden");
-    await GMDB.clear("tracks");await GMDB.clear("playlists");tracks=[];playlists=[];renderAll();updateStorageStatus();toast("Local library deleted");
+    await GMDB.clear("tracks");await GMDB.clear("playlists");tracks=[];playlists=[];renderAll();updateStorageStatus();
+    if($("#backupStatus")) $("#backupStatus").textContent="";
+    toast("Local library deleted");
   }
 
   function toast(msg,ms=2500){
